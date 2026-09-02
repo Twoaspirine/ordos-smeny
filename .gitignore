@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.idea/
+.venv/
+venv/
+_test*.html
+_p*.json
+config.json
+data/
+.session_url
+
+# исходные выгрузки Excel держим локально
+*.xlsx
+*.xlsm
