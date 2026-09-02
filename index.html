@@ -148,7 +148,7 @@ select.field{border:1px solid var(--line-2); border-radius:9px; padding:7px 10px
 .day-f .plus{color:var(--brass); font-weight:700; font-size:15px; line-height:1}
 
 /* ---- month grid ---- */
-.mgrid{display:grid; grid-template-columns:repeat(7,1fr); gap:6px}
+.mgrid{display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:6px}
 .mwd{text-align:center; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:var(--faint); padding:3px 0}
 .mcell{background:var(--surface); border:1px solid var(--line); border-radius:9px; min-height:106px; padding:5px 6px; cursor:pointer; display:flex; flex-direction:column; gap:2px}
 .mcell.out{opacity:.4} .mcell.today{border-color:var(--brass)}
@@ -280,7 +280,14 @@ td.num,th.num{text-align:right; font-family:"IBM Plex Mono",monospace}
   .week{grid-template-columns:1fr; gap:8px}
   .day{min-height:0}
   .split{grid-template-columns:1fr}
-  .mcell{min-height:62px}
+  /* месяц-сетка: 7 колонок в экран, без горизонтального выезда */
+  .mgrid{gap:3px}
+  .mcell{min-height:58px; padding:3px 4px; border-radius:7px; overflow:hidden}
+  .mwd{font-size:10px}
+  .mcell .mn{font-size:11px}
+  .mcell .mi{font-size:8.5px}
+  .mcell .mi.mshift{padding-left:3px; border-left-width:2px}
+  .mcell .mclosed,.mcell .mmore{font-size:8px}
   /* таблицы-списки -> карточки: кнопки маленькие, в одну линию в углу */
   #view .card{overflow-x:auto; padding:8px}
   #view table:not(.paytbl),
@@ -289,13 +296,13 @@ td.num,th.num{text-align:right; font-family:"IBM Plex Mono",monospace}
   #view table:not(.paytbl) td{display:block; width:auto}
   #view table:not(.paytbl) thead{display:none}
   #view table:not(.paytbl) tr{position:relative; border:1px solid var(--line); border-radius:10px;
-    margin-bottom:8px; padding:8px 12px 40px 12px}
+    margin-bottom:8px; padding:8px 12px 50px 12px}
   #view table:not(.paytbl) tbody tr:hover td{background:transparent}
   #view table:not(.paytbl) td{border:none; padding:1px 0}
   #view table:not(.paytbl) td.num{text-align:left}
-  #view td.rowbtns{position:absolute; bottom:6px; right:8px; display:flex; gap:8px;
+  #view td.rowbtns{position:absolute; bottom:7px; right:9px; display:flex; gap:10px;
     margin:0; padding:0; border:none}
-  #view td.rowbtns .iconbtn{width:30px; height:28px; font-size:12px; border-radius:7px}
+  #view td.rowbtns .iconbtn{width:40px; height:38px; font-size:17px; border-radius:9px}
   .mgroup .card{padding:8px}
   /* сводка-выплаты остаётся таблицей — мелкий шрифт + гориз. скролл внутри карточки */
   .paytbl{font-size:10.5px; min-width:520px}
@@ -413,24 +420,65 @@ if (!CFG.url || !CFG.key) {
       let applying = false;
       const apply = (row, cb) => { applying = true; try { cb(row ? row.data : null); } finally { applying = false; } };
       window.CloudSync = {
-        online: false,
+        online: false, _cb: null, _wsOk: false, _poll: null, _seen: null,
+        async _fetch() {
+          const { data, error } = await sb.from("planner").select("data,updated_at").eq("id", 1).maybeSingle();
+          if (error) throw error;
+          return data;
+        },
+        _take(row, cb) {
+          if (!row) return;
+          if (row.updated_at && row.updated_at === this._seen) return;   // уже видели — не дёргаем экран
+          this._seen = row.updated_at || null;
+          apply(row, cb);
+        },
+        _startPoll() {
+          if (this._poll || !this._cb) return;
+          const self = this;
+          this._poll = setInterval(async () => {
+            try { self._take(await self._fetch(), self._cb); stat(true); }
+            catch (e) { stat(false); }
+          }, 15000);
+        },
+        _stopPoll() { if (this._poll) { clearInterval(this._poll); this._poll = null; } },
         async subscribe(cb) {
+          this._cb = cb;
+          const self = this;
           try {
-            const { data, error } = await sb.from("planner").select("data").eq("id", 1).maybeSingle();
-            stat(!error);
-            apply(data, cb);
-          } catch (e) { stat(false); }
-          sb.channel("planner-1")
-            .on("postgres_changes",
-                { event: "*", schema: "public", table: "planner", filter: "id=eq.1" },
-                (p) => { stat(true); apply(p.new, cb); })
-            .subscribe((s) => stat(s === "SUBSCRIBED"));
+            const row0 = await this._fetch();
+            if (row0) this._take(row0, cb);
+            else apply(null, cb);             // строки ещё нет — клиент зальёт свои данные
+            stat(true);                       // REST доступен — база на связи
+          } catch (e) {
+            window.__cloudErr = "чтение базы: " + ((e && (e.message || e.hint || e.toString())) || e);
+            stat(false);
+          }
+          try {
+            sb.channel("planner-1")
+              .on("postgres_changes",
+                  { event: "*", schema: "public", table: "planner", filter: "id=eq.1" },
+                  (p) => { self._wsOk = true; stat(true); self._stopPoll(); self._take(p.new, cb); })
+              .subscribe((s) => {
+                if (s === "SUBSCRIBED") { self._wsOk = true; stat(true); self._stopPoll(); }
+                else if (s === "CHANNEL_ERROR" || s === "TIMED_OUT" || s === "CLOSED") {
+                  self._wsOk = false; self._startPoll();   // live-канал не поднялся — опрашиваем базу сами
+                }
+              });
+          } catch (e) { this._startPoll(); }
+          setTimeout(() => { if (!self._wsOk) self._startPoll(); }, 6000);
         },
         async push(data) {
           if (applying) return;
-          const { error } = await sb.from("planner")
-            .upsert({ id: 1, data, updated_at: new Date().toISOString() });
-          if (error) stat(false); else stat(true);
+          try {
+            const stamp = new Date().toISOString();
+            const { error } = await sb.from("planner").upsert({ id: 1, data, updated_at: stamp });
+            if (error) throw error;
+            this._seen = stamp;               // это наша же запись — не принимать её обратно как чужую
+            stat(true);
+          } catch (e) {
+            window.__cloudErr = "запись базы: " + ((e && (e.message || e.hint || e.toString())) || e);
+            stat(false);
+          }
         },
       };
       done();
