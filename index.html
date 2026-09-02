@@ -17,7 +17,7 @@
   --bg:#F3F1EC; --surface:#FFFFFF; --surface-2:#F8F6F1; --raised:#FFFFFF;
   --ink:#211D17; --muted:#726A5C; --faint:#9A9284; --line:#E7E2D8; --line-2:#D7D0C1;
   --brass:#9C6714; --brass-ink:#FFFFFF; --brass-soft:#F0E7D3;
-  --gap:#AE3B33; --gap-soft:#F7E1DE; --ok:#3B7A4C; --ok-soft:#E2EEE3; --warn:#A9761C;
+  --gap:#AE3B33; --gap-soft:#F7E1DE; --ok:#3B7A4C; --ok-soft:#E2EEE3; --warn:#A9761C; --warn-soft:#F6EAD3;
   --shadow:0 6px 22px rgba(43,35,20,.13); --shadow-sm:0 1px 2px rgba(43,35,20,.10);
   --r:12px;
 }
@@ -25,14 +25,14 @@
   --bg:#15120D; --surface:#201C15; --surface-2:#28231A; --raised:#2A251B;
   --ink:#ECE5D6; --muted:#9E9482; --faint:#6E6555; --line:#332D20; --line-2:#463E2C;
   --brass:#D3A459; --brass-ink:#1C1710; --brass-soft:#332A19;
-  --gap:#DC655E; --gap-soft:#3B2320; --ok:#5FA873; --ok-soft:#21301F; --warn:#D3A459;
+  --gap:#DC655E; --gap-soft:#3B2320; --ok:#5FA873; --ok-soft:#21301F; --warn:#D3A459; --warn-soft:#33291A;
   --shadow:0 10px 30px rgba(0,0,0,.5); --shadow-sm:0 1px 2px rgba(0,0,0,.4);
 }}
 :root[data-theme="dark"]{
   --bg:#15120D; --surface:#201C15; --surface-2:#28231A; --raised:#2A251B;
   --ink:#ECE5D6; --muted:#9E9482; --faint:#6E6555; --line:#332D20; --line-2:#463E2C;
   --brass:#D3A459; --brass-ink:#1C1710; --brass-soft:#332A19;
-  --gap:#DC655E; --gap-soft:#3B2320; --ok:#5FA873; --ok-soft:#21301F; --warn:#D3A459;
+  --gap:#DC655E; --gap-soft:#3B2320; --ok:#5FA873; --ok-soft:#21301F; --warn:#D3A459; --warn-soft:#33291A;
   --shadow:0 10px 30px rgba(0,0,0,.5); --shadow-sm:0 1px 2px rgba(0,0,0,.4);
 }
 
@@ -206,6 +206,15 @@ td.num,th.num{text-align:right; font-family:"IBM Plex Mono",monospace}
 .tag.uch{background:var(--brass-soft); color:var(--brass)}
 .tag.igra{background:var(--ok-soft); color:var(--ok)}
 .tag.pin{background:var(--surface-2); color:var(--muted)}
+/* приоритеты заказов */
+.tag.p-hi{background:var(--gap-soft); color:var(--gap)}
+.tag.p-mid{background:var(--surface-2); color:var(--muted)}
+.tag.p-lo{background:var(--surface-2); color:var(--faint)}
+/* статусы заказов */
+.tag.s-need{background:var(--warn-soft); color:var(--warn)}
+.tag.s-ord{background:var(--brass-soft); color:var(--brass)}
+.tag.s-got{background:var(--ok-soft); color:var(--ok)}
+.tag.s-cx{background:var(--surface-2); color:var(--faint); text-decoration:line-through}
 .pill{font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; padding:2px 7px; border-radius:6px}
 .pill.ok{background:var(--ok-soft); color:var(--ok)}
 .pill.dr{background:var(--gap-soft); color:var(--warn)}
@@ -280,13 +289,13 @@ td.num,th.num{text-align:right; font-family:"IBM Plex Mono",monospace}
   #view table:not(.paytbl) td{display:block; width:auto}
   #view table:not(.paytbl) thead{display:none}
   #view table:not(.paytbl) tr{position:relative; border:1px solid var(--line); border-radius:10px;
-    margin-bottom:8px; padding:8px 60px 8px 12px}
+    margin-bottom:8px; padding:8px 12px 40px 12px}
   #view table:not(.paytbl) tbody tr:hover td{background:transparent}
   #view table:not(.paytbl) td{border:none; padding:1px 0}
   #view table:not(.paytbl) td.num{text-align:left}
-  #view td.rowbtns{position:absolute; top:6px; right:8px; display:flex; gap:6px;
+  #view td.rowbtns{position:absolute; bottom:6px; right:8px; display:flex; gap:8px;
     margin:0; padding:0; border:none}
-  #view td.rowbtns .iconbtn{width:26px; height:24px; font-size:11px; border-radius:6px}
+  #view td.rowbtns .iconbtn{width:30px; height:28px; font-size:12px; border-radius:7px}
   .mgroup .card{padding:8px}
   /* сводка-выплаты остаётся таблицей — мелкий шрифт + гориз. скролл внутри карточки */
   .paytbl{font-size:10.5px; min-width:520px}
@@ -361,6 +370,7 @@ td.num,th.num{text-align:right; font-family:"IBM Plex Mono",monospace}
      впишите url и key ниже. Пусто = только это устройство.
      Настроить можно и внутри приложения: экран «Данные».
      ============================================================ -->
+<script src="supabase.min.js"></script>
 <script type="module">
 const HARDCODED = {
   url: "https://lmluzntiokrlniyleiuv.supabase.co",
@@ -375,12 +385,29 @@ try {
 function done(){ if (window.__cloudReady) window.__cloudReady(); }
 function stat(v){ if(window.CloudSync) window.CloudSync.online = v; if(window.__cloudStatus) window.__cloudStatus(); }
 
+async function loadSupabase(){
+  // 1) локальная копия рядом с файлом — работает без внешних CDN (важно для мобильного интернета)
+  if (window.supabase && window.supabase.createClient) return window.supabase.createClient;
+  // 2) запасные CDN, если локальная копия не загрузилась
+  const urls = [
+    "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm",
+    "https://esm.sh/@supabase/supabase-js@2.45.4?target=es2019",
+    "https://cdn.skypack.dev/@supabase/supabase-js@2",
+  ];
+  let last;
+  for (const u of urls) {
+    try { const m = await import(u); if (m && m.createClient) return m.createClient; }
+    catch (e) { last = e; }
+  }
+  throw last || new Error("supabase-js не загрузился");
+}
+
 if (!CFG.url || !CFG.key) {
   window.CloudSync = null; done();
 } else {
   (async () => {
     try {
-      const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
+      const createClient = await loadSupabase();
       const sb = createClient(CFG.url, CFG.key,
         { realtime: { params: { eventsPerSecond: 3 } }, auth: { persistSession: false } });
       let applying = false;
@@ -408,6 +435,7 @@ if (!CFG.url || !CFG.key) {
       };
       done();
     } catch (e) {
+      window.__cloudErr = (e && (e.message || e.toString())) || "неизвестная ошибка";
       window.CloudSync = null; done();
     }
   })();
@@ -1063,12 +1091,14 @@ function viewOrders(){
   const box=el("div","card"); const t=el("table");
   t.innerHTML="<thead><tr><th>Позиция</th><th>Кол-во</th><th>Приоритет</th><th>Статус</th><th>Мероприятие</th><th></th></tr></thead>";
   const tb=el("tbody");
+  const pcl={ "Срочно":"p-hi", "Обычный":"p-mid", "Потом":"p-lo" };
+  const scl={ "Нужно":"s-need", "Заказано":"s-ord", "Получено":"s-got", "Отменено":"s-cx" };
   list.forEach(o=>{
     const tr=el("tr"); if(["Получено","Отменено"].includes(o.status)) tr.style.opacity=".55";
     const ev=DB.events.find(e=>e.id===o.event_id);
     tr.innerHTML=`<td><b>${esc(o.item)}</b>${o.note?'<div style="color:var(--faint);font-size:12px">'+esc(o.note)+'</div>':''}</td>`
-      +`<td>${esc(o.qty||"")}</td><td><span class=tag>${esc(o.priority)}</span></td>`
-      +`<td><span class=tag>${esc(o.status)}</span></td><td>${ev?esc(ev.title):""}</td>`;
+      +`<td>${esc(o.qty||"")}</td><td><span class="tag ${pcl[o.priority]||"p-mid"}">${esc(o.priority)}</span></td>`
+      +`<td><span class="tag ${scl[o.status]||""}">${esc(o.status)}</span></td><td>${ev?esc(ev.title):""}</td>`;
     const td=el("td"); td.className="rowbtns";
     const ed=el("button","iconbtn","✎"); ed.onclick=()=>orderForm(o);
     const rm=el("button","iconbtn del","✕"); rm.onclick=()=>confirmSheet("Удалить позицию?",()=>{
@@ -1111,12 +1141,14 @@ function viewData(){
   cloud.append(el("div","eyebrow","Общая база"));
   const st=el("div"); st.style.cssText="font-size:13.5px;margin-bottom:10px";
   if(CLOUD && CLOUD.online){
-    st.innerHTML='<b style="color:var(--ok)">Подключена.</b> Правки видят все, у кого открыт этот файл.';
+    st.innerHTML='<b style="color:var(--ok)">Подключена.</b> Правки видят все, кто открыл ссылку.';
   }else if(CLOUD){
-    st.innerHTML='<b style="color:var(--gap)">Настроена, но нет связи.</b> Проверьте интернет.';
+    st.innerHTML='<b style="color:var(--gap)">Настроена, но нет связи.</b> Проверьте интернет и обновите страницу.';
+  }else if(window.__cloudErr){
+    st.innerHTML='<b style="color:var(--gap)">Ошибка подключения.</b> Обновите страницу; если не помогло — покажите мне текст ниже.'
+      +'<div style="margin-top:6px;font-family:monospace;font-size:11px;color:var(--faint);word-break:break-all">'+esc(window.__cloudErr)+'</div>';
   }else{
-    st.innerHTML='<b style="color:var(--muted)">Не подключена.</b> Пока правки сохраняются только на этом устройстве. '
-      +'Чтобы график стал общим — впишите данные Supabase ниже (как создать — напишите мне).';
+    st.innerHTML='<b style="color:var(--muted)">Не подключена.</b> Правки сохраняются только на этом устройстве.';
   }
   cloud.append(st);
   let stored={}; try{ stored=JSON.parse(localStorage.getItem("ordos_sb_cfg")||"{}"); }catch(e){}
