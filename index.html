@@ -304,9 +304,9 @@ td.num,th.num{text-align:right; font-family:"IBM Plex Mono",monospace}
     margin:0; padding:0; border:none}
   #view td.rowbtns .iconbtn{width:50px; height:50px; font-size:20px; border-radius:11px}
   .mgroup .card{padding:8px}
-  /* сводка-выплаты остаётся таблицей — мелкий шрифт + гориз. скролл внутри карточки */
-  .paytbl{font-size:10.5px; min-width:520px}
-  .paytbl th,.paytbl td{padding:4px 6px}
+  /* сводка-выплаты: теперь 3 колонки — влезает без горизонтальной прокрутки */
+  .paytbl{font-size:13px; min-width:0; width:100%}
+  .paytbl th,.paytbl td{padding:6px 8px}
   .form{grid-template-columns:1fr; gap:6px}
   .form label{margin-top:6px}
   .sheet{top:auto; bottom:0; transform:none; left:0; width:100%;
@@ -509,10 +509,16 @@ function nid(arr){ return arr.reduce((m,x)=>Math.max(m,x.id||0),0) + 1; }
 let CLOUD = null;         // window.CloudSync, если подключено
 let _cloudInit = false;
 let _pushT = null;
+let _pending = false;     // есть локальная правка, ещё не отправленная в облако —
+                           // нельзя затирать DB входящими данными, пока она не ушла
 function pushCloud(){
-  if(!CLOUD) return;
+  _pending = true;
+  if(!CLOUD) return;   // облако ещё не подключено — правка подождёт в _pending, дошлём как только подключимся
   clearTimeout(_pushT);
-  _pushT = setTimeout(()=>{ try{ CLOUD.push(DB); }catch(e){} }, 500);
+  _pushT = setTimeout(()=>{
+    const toSend = DB;
+    Promise.resolve(CLOUD.push(toSend)).catch(()=>{}).then(()=>{ if(DB===toSend) _pending=false; });
+  }, 200);
 }
 function commit(){ saveDB(); pushCloud(); render(); }
 
@@ -520,7 +526,9 @@ window.__cloudReady = function(){
   CLOUD = window.CloudSync || null;
   updateSyncPill();
   if(!CLOUD) return;
+  if(_pending) pushCloud();   // локальная правка уже была сделана до подключения — шлём её, а не принимаем чужой снимок поверх
   CLOUD.subscribe(function(remote){
+    if(_pending) return;   // ждём, пока улетит наша правка — не затираем её чужим снимком
     if(remote && Array.isArray(remote.employees) && Array.isArray(remote.shifts)
        && Array.isArray(remote.events) && remote.employees.length){
       DB = remote; saveDB();
@@ -666,22 +674,21 @@ function buildSchedule(mode, anchor){
     });
     cur=addDays(cur,1);
   }
-  // сводка: за месяц, разбивка аванс (1–15) / зарплата (16–конец)
+  // сводка: выплата раз в месяц, 15-го числа, за период с 15-го прошлого месяца по 14-е текущего
+  const ad=D(anchor);
+  const payDate=ISO(new Date(ad.getFullYear(), ad.getMonth(), 15));
+  const periodFrom=ISO(new Date(ad.getFullYear(), ad.getMonth()-1, 15));
   const per={};
-  shifts.filter(s=>monthKey(s.date)===anchorMonth).forEach(s=>{
-    const e=per[s.employee_id]||(per[s.employee_id]={id:s.employee_id,name:empName(s.employee_id),
-      adv:{n:0,m:0}, sal:{n:0,m:0}});
-    const half=(D(s.date).getDate()<=15)?e.adv:e.sal;
-    half.n++; half.m+=shiftMoney(s);
+  DB.shifts.filter(s=>s.date>=periodFrom && s.date<payDate).forEach(s=>{
+    const e=per[s.employee_id]||(per[s.employee_id]={id:s.employee_id,name:empName(s.employee_id),n:0,m:0});
+    e.n++; e.m+=shiftMoney(s);
   });
   const summary=Object.values(per).sort((a,b)=>a.name.localeCompare(b.name));
-  summary.forEach(e=>{ e.n=e.adv.n+e.sal.n; e.total=e.adv.m+e.sal.m; });
   const gaps=days.filter(d=>d.inMonth && !d.wknd && !d.closed && d.people===0);
   const totalH=Math.round(days.filter(d=>d.inMonth).reduce((a,d)=>a+d.hours,0)*10)/10;
-  const grand={adv:summary.reduce((a,e)=>a+e.adv.m,0), sal:summary.reduce((a,e)=>a+e.sal.m,0)};
-  grand.total=grand.adv+grand.sal;
+  const grand={total:summary.reduce((a,e)=>a+e.m,0), n:summary.reduce((a,e)=>a+e.n,0)};
   const title = monthTitle(anchor);
-  return {from,to,days,summary,gaps,totalH,grand,title};
+  return {from,to,days,summary,gaps,totalH,grand,title,payDate,periodFrom,periodTo:addDays(payDate,-1)};
 }
 
 /* ================= состояние экрана ================= */
@@ -769,8 +776,8 @@ function viewSchedule(){
   // kpi
   const k=el("div","kpis");
   k.append(
-    kpi(fmtRub(sc.grand.total),"К выплате за месяц","good"),
-    kpi(sc.summary.reduce((a,e)=>a+e.n,0),"Смен в месяце"),
+    kpi(fmtRub(sc.grand.total),"К выплате "+fmtDM(sc.payDate),"good"),
+    kpi(sc.grand.n,"Смен за период"),
     kpi(sc.gaps.length,"Дней без людей", sc.gaps.length?"bad":"good"),
   );
   v.append(k);
@@ -802,7 +809,7 @@ function viewSchedule(){
   v.append(split);
 
   // сводка / выплаты
-  v.append(el("div","eyebrow","Сводка за месяц — аванс (1–15) и зарплата (16–конец)"));
+  v.append(el("div","eyebrow",`Выплата ${fmtDM(sc.payDate)} — за период ${fmtDM(sc.periodFrom)} – ${fmtDM(sc.periodTo)}`));
   v.append(summaryCard(sc));
 }
 
@@ -931,24 +938,18 @@ function peopleCard(){
 function summaryCard(sc){
   const box=el("div","card");
   const t=el("table"); t.className="paytbl";
-  t.innerHTML="<thead>"
-    +"<tr><th rowspan=2>Сотрудник</th><th colspan=2>Аванс (1–15)</th><th colspan=2>Зарплата (16–…)</th><th rowspan=2 class=num>Итого</th></tr>"
-    +"<tr><th class=num>смен</th><th class=num>₽</th><th class=num>смен</th><th class=num>₽</th></tr></thead>";
+  t.innerHTML="<thead><tr><th>Сотрудник</th><th class=num>смен</th><th class=num>Сумма</th></tr></thead>";
   const tb=el("tbody");
   sc.summary.forEach(e=>{
     const tr=el("tr");
     tr.innerHTML=`<td>${esc(e.name)}</td>`
-      +`<td class=num>${e.adv.n||"—"}</td><td class=num>${e.adv.m?fmtRub(e.adv.m):"—"}</td>`
-      +`<td class=num>${e.sal.n||"—"}</td><td class=num>${e.sal.m?fmtRub(e.sal.m):"—"}</td>`
-      +`<td class=num><b>${fmtRub(e.total)}</b></td>`;
+      +`<td class=num>${e.n}</td><td class=num><b>${fmtRub(e.m)}</b></td>`;
     tb.append(tr);
   });
-  if(!sc.summary.length) tb.innerHTML="<tr><td colspan=6 class=empty>Смен в этом месяце нет</td></tr>";
+  if(!sc.summary.length) tb.innerHTML="<tr><td colspan=3 class=empty>Смен за этот период нет</td></tr>";
   const tf=el("tfoot");
   tf.innerHTML=`<tr><td><b>Всего</b></td>`
-    +`<td class=num>${sc.summary.reduce((a,e)=>a+e.adv.n,0)}</td><td class=num><b>${fmtRub(sc.grand.adv)}</b></td>`
-    +`<td class=num>${sc.summary.reduce((a,e)=>a+e.sal.n,0)}</td><td class=num><b>${fmtRub(sc.grand.sal)}</b></td>`
-    +`<td class=num><b>${fmtRub(sc.grand.total)}</b></td></tr>`;
+    +`<td class=num>${sc.grand.n}</td><td class=num><b>${fmtRub(sc.grand.total)}</b></td></tr>`;
   t.append(tb,tf); box.append(t);
   const c=el("div", sc.gaps.length?"callout":"callout calm");
   c.append(el("span",null, sc.gaps.length
