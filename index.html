@@ -468,16 +468,18 @@ if (!CFG.url || !CFG.key) {
           setTimeout(() => { if (!self._wsOk) self._startPoll(); }, 6000);
         },
         async push(data) {
-          if (applying) return;
+          if (applying) return true;   // применяем чужую правку — своей отправки сейчас нет, это не ошибка
           try {
             const stamp = new Date().toISOString();
             const { error } = await sb.from("planner").upsert({ id: 1, data, updated_at: stamp });
             if (error) throw error;
             this._seen = stamp;               // это наша же запись — не принимать её обратно как чужую
             stat(true);
+            return true;
           } catch (e) {
             window.__cloudErr = "запись базы: " + ((e && (e.message || e.hint || e.toString())) || e);
             stat(false);
+            return false;                      // сигнал наружу: правка не ушла, нужно повторить
           }
         },
       };
@@ -515,10 +517,15 @@ function pushCloud(){
   _pending = true;
   if(!CLOUD) return;   // облако ещё не подключено — правка подождёт в _pending, дошлём как только подключимся
   clearTimeout(_pushT);
-  _pushT = setTimeout(()=>{
-    const toSend = DB;
-    Promise.resolve(CLOUD.push(toSend)).catch(()=>{}).then(()=>{ if(DB===toSend) _pending=false; });
-  }, 200);
+  _pushT = setTimeout(doPushCloud, 200);
+}
+async function doPushCloud(){
+  if(!CLOUD) return;
+  const toSend = DB;
+  let ok = false;
+  try{ ok = await CLOUD.push(toSend); }catch(e){ ok = false; }
+  if(ok){ if(DB===toSend) _pending=false; }
+  else { _pushT = setTimeout(doPushCloud, 5000); }   // не отправилось (нет сети и т.п.) — пробуем снова, правку не теряем
 }
 function commit(){ saveDB(); pushCloud(); render(); }
 
@@ -577,9 +584,11 @@ function initials(name){
   return ((p[0]||"?")[0]||"?").toUpperCase()+((p[1]||"")[0]||"").toUpperCase();
 }
 function spanHours(a,b){
-  const m=s=>{ const x=/^\s*(\d{1,2})[:.]?(\d{2})?\s*$/.exec(s||""); return x?(+x[1]*60+ +(x[2]||0)):null; };
+  const m=s=>{ const x=/^\s*([01]?\d|2[0-3])[:.]?([0-5]\d)?\s*$/.exec(s||""); return x?(+x[1]*60+ +(x[2]||0)):null; };
   let A=m(a),B=m(b); if(A==null||B==null) return 0;
-  if(B<=A) B+=1440; return Math.round((B-A)/6)/10;
+  if(B===A) return 0;      // одинаковое время — не 24-часовая смена, а пустой ввод
+  if(B<A) B+=1440;         // смена через полночь
+  return Math.round((B-A)/6)/10;
 }
 function shiftHours(s){
   if(s.hours) return +s.hours;
@@ -991,11 +1000,16 @@ function shiftForm(s, date){
     DB.shifts=DB.shifts.filter(x=>x.id!==s.id); close(); commit(); }); }});
   actions.push({label:"Сохранить",cls:"primary",fn:close=>{
     if(!emp.value){ toast("Выберите сотрудника"); return; }
+    if(!dt.value){ toast("Укажите дату"); return; }
+    const hVal = hr.value.trim()!==""?+hr.value.replace(",",".") : (st.value&&en.value?spanHours(st.value,en.value):0);
+    if(!Number.isFinite(hVal) || hVal<0 || hVal>24){ toast("Часы указаны неверно"); return; }
     const rec={ employee_id:+emp.value, date:dt.value, start:st.value.trim(), end:en.value.trim(),
-      hours:hr.value.trim()!==""?+hr.value.replace(",",".") : (st.value&&en.value?spanHours(st.value,en.value):0),
-      status:status.value, note:nt.value.trim(), location_id:DB.locations[0]?.id||1 };
-    if(s&&s.id) Object.assign(DB.shifts.find(x=>x.id===s.id), rec);
-    else DB.shifts.push(Object.assign({id:nid(DB.shifts)},rec));
+      hours:hVal, status:status.value, note:nt.value.trim(), location_id:DB.locations[0]?.id||1 };
+    if(s&&s.id){
+      const ex=DB.shifts.find(x=>x.id===s.id);
+      if(!ex){ toast("Эта смена уже удалена в другом месте"); close(); render(); return; }
+      Object.assign(ex, rec);
+    } else DB.shifts.push(Object.assign({id:nid(DB.shifts)},rec));
     commit(); close();
   }});
   openSheet(s&&s.id?"Смена":"Новая смена", body, actions);
@@ -1077,8 +1091,11 @@ function eventForm(e){
   actions.push({label:"Сохранить",cls:"primary",fn:c=>{
     if(!ti.value.trim()||!dt.value){ toast("Нужны дата и название"); return; }
     const rec={date:dt.value,title:ti.value.trim(),time:tm.value.trim(),kind:kd.value,note:nt.value.trim()};
-    if(e) Object.assign(DB.events.find(x=>x.id===e.id),rec);
-    else DB.events.push(Object.assign({id:nid(DB.events)},rec));
+    if(e){
+      const ex=DB.events.find(x=>x.id===e.id);
+      if(!ex){ toast("Это мероприятие уже удалено в другом месте"); c(); render(); return; }
+      Object.assign(ex, rec);
+    } else DB.events.push(Object.assign({id:nid(DB.events)},rec));
     commit(); c();
   }});
   openSheet(e?"Мероприятие":"Новое мероприятие", f, actions);
@@ -1121,8 +1138,11 @@ function staffForm(e){
   const actions=[{label:"Сохранить",cls:"primary",fn:c=>{
     if(!nm.value.trim()){ toast("Введите имя"); return; }
     const rec={name:nm.value.trim(),role:rl.value.trim(),rate_type:rt.value,rate:+((rate.value||"0").replace(",",".")),active:+ac.value};
-    if(e) Object.assign(DB.employees.find(x=>x.id===e.id),rec);
-    else DB.employees.push(Object.assign({id:nid(DB.employees),location_id:DB.locations[0]?.id||1,pin:"",note:"",sort:0},rec));
+    if(e){
+      const ex=DB.employees.find(x=>x.id===e.id);
+      if(!ex){ toast("Этот сотрудник уже удалён в другом месте"); c(); render(); return; }
+      Object.assign(ex, rec);
+    } else DB.employees.push(Object.assign({id:nid(DB.employees),location_id:DB.locations[0]?.id||1,pin:"",note:"",sort:0},rec));
     commit(); c();
   }}];
   openSheet(e?"Сотрудник":"Новый сотрудник", f, actions);
@@ -1174,8 +1194,11 @@ function orderForm(o){
     if(!it.value.trim()){ toast("Введите название"); return; }
     const rec={item:it.value.trim(),qty:qt.value.trim(),priority:pr.value,status:stt.value,
       shop:o?.shop||"",price:o?.price||"",event_id:+ev.value||null,added_by:by.value.trim(),note:nt.value.trim()};
-    if(o) Object.assign(DB.orders.find(x=>x.id===o.id),rec);
-    else DB.orders.push(Object.assign({id:nid(DB.orders),created:todayISO()},rec));
+    if(o){
+      const ex=DB.orders.find(x=>x.id===o.id);
+      if(!ex){ toast("Эта позиция уже удалена в другом месте"); c(); render(); return; }
+      Object.assign(ex, rec);
+    } else DB.orders.push(Object.assign({id:nid(DB.orders),created:todayISO()},rec));
     commit(); c();
   }}];
   openSheet(o?"Позиция":"Новая позиция", f, actions);
@@ -1240,7 +1263,11 @@ function viewData(){
     openSheet("Загрузить данные", inp, [{label:"Загрузить",cls:"primary",fn:c=>{
       try{
         const d=JSON.parse(inp.value);
-        if(!d.employees||!d.shifts) throw 0;
+        if(!Array.isArray(d.employees)||!Array.isArray(d.shifts)) throw 0;
+        d.events=Array.isArray(d.events)?d.events:[];
+        d.orders=Array.isArray(d.orders)?d.orders:[];
+        d.locations=Array.isArray(d.locations)&&d.locations.length?d.locations:DB.locations;
+        d.settings=(d.settings&&typeof d.settings==="object")?d.settings:(DB.settings||{});
         DB=d; saveDB(); pushCloud(); c(); toast("Данные загружены"); S.anchor=pickAnchor(); render();
       }catch(e){ toast("Не похоже на данные планировщика"); }
     }}]);
